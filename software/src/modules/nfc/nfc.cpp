@@ -33,6 +33,11 @@
 
 #define DETECTION_THRESHOLD_MS 2000
 
+// Annahme: Wir definieren den Ringpuffer auf 8 Einträge.
+#ifndef TAG_LIST_LENGTH
+#define TAG_LIST_LENGTH 8
+#endif
+
 // Konstruktor: Wird hardwarebezogener Code nur auf WARP2/WARP3 initialisiert,
 // ansonsten wird ein Dummy-Pfad gewählt.
 NFC::NFC()
@@ -46,6 +51,7 @@ NFC::NFC()
 #else
     : DeviceModule(nullptr, 0, "nfc", "NFC", "NFC", [](){})
 #endif
+    , ring_buffer_tail(0) // Initialisiere den Tail-Index
 {
 }
 
@@ -92,7 +98,7 @@ void NFC::pre_setup()
             if (id_copy.length() != 0 && id_copy.length() % 3 != 2)
                 return "Tag ID hat unerwartete Länge. Erwartetes Format: Hex-Bytes, getrennt durch Doppelpunkte (z.B. \"01:23:ab:3d\").";
 
-            for(int i = 0; i < id_copy.length(); ++i) {
+            for (int i = 0; i < id_copy.length(); ++i) {
                 char c = id_copy.charAt(i);
                 if ((i % 3 != 2) && ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')))
                     continue;
@@ -138,7 +144,7 @@ void NFC::pre_setup()
         if (id_copy.length() != 0 && id_copy.length() % 3 != 2)
             return "Tag ID hat unerwartete Länge. Erwartetes Format: Hex-Bytes, getrennt durch Doppelpunkte (z.B. \"01:23:ab:3d\").";
 
-        for(int i = 0; i < id_copy.length(); ++i) {
+        for (int i = 0; i < id_copy.length(); ++i) {
             char c = id_copy.charAt(i);
             if ((i % 3 != 2) && ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')))
                 continue;
@@ -189,7 +195,7 @@ void NFC::pre_setup()
 
 //
 // Hardware-spezifische Initialisierung – nur aktiv, wenn wir auf WARP2 oder WARP3 bauen.
-// Ansonsten wird ein Dummy-Pfad gewählt, der lediglich die nötigen Datenstrukturen anlegt.
+// Andernfalls wird ein Dummy-Pfad gewählt, der lediglich die nötigen Datenstrukturen anlegt.
 //
 void NFC::setup_nfc()
 {
@@ -218,21 +224,12 @@ void NFC::setup_nfc()
     initialized = true;
     api.addFeature("nfc");
 
-    old_tags = static_cast<decltype(old_tags)>(calloc_dram(TAG_LIST_LENGTH, sizeof(*old_tags)));
-    new_tags = static_cast<decltype(old_tags)>(calloc_dram(TAG_LIST_LENGTH, sizeof(*new_tags)));
-
-#if MODULE_AUTOMATION_AVAILABLE()
-    automation.set_enabled(AutomationTriggerID::NFC, true);
-    automation.set_enabled(AutomationActionID::NFCInjectTag, true);
-#endif
+    // In der Hardware-Version nutzen wir NICHT mehr old_tags und new_tags,
+    // da unser Ringpuffer in "seen_tags" genutzt wird.
 #else
-    // Simuliere NFC: Erzeuge leere Tag-Listen, damit injected Tags verarbeitet werden können
+    // Dummy-Modus: Simuliere NFC – keine Hardware, aber wir initialisieren die Strukturen.
     initialized = true;
     api.addFeature("nfc");
-    old_tags = new tag_info_t[TAG_LIST_LENGTH];
-    new_tags = new tag_info_t[TAG_LIST_LENGTH];
-    memset(old_tags, 0, sizeof(tag_info_t) * TAG_LIST_LENGTH);
-    memset(new_tags, 0, sizeof(tag_info_t) * TAG_LIST_LENGTH);
 #endif
 }
 
@@ -338,56 +335,40 @@ void tag_id_bytes_to_string(const uint8_t *tag_id, uint8_t tag_id_len, char buf[
     else
         buf[3 * tag_id_len - 1] = '\0';
 }
-// NEU: Methode zur Einsortierung eines neuen Tags in den Ringpuffer
+
+// NEU: Methode zur indexbasierten Einsortierung eines neuen Tags in den Ringpuffer
 void NFC::insert_new_tag(const tag_info_t &new_tag) {
-    // Hole den aktuellsten (letzten) Eintrag aus seen_tags
-    Config *last_slot = static_cast<Config *>(seen_tags.get(TAG_LIST_LENGTH - 1));
-    char current_last_id[NFC_TAG_ID_STRING_LENGTH + 1];
-    // Kopiere den aktuellen Wert aus dem Config-Eintrag in einen lokalen Tag-Eintrag:
-    last_slot->get("tag_id")->asString().toCharArray(current_last_id, sizeof(current_last_id));
-    uint8_t current_last_type = last_slot->get("tag_type")->asUint();
-    uint32_t current_last_seen = last_slot->get("last_seen")->asUint();
+    int index = ring_buffer_tail;
+    Config *slot = static_cast<Config *>(seen_tags.get(index));
+    
+    slot->get("tag_type")->updateUint(new_tag.tag_type);
+    slot->get("tag_id")->updateString(new_tag.tag_id);
+    slot->get("last_seen")->updateUint(new_tag.last_seen);
 
-    // Vergleiche: Wenn der neue Tag identisch ist, dann nichts tun.
-    if ((current_last_seen == new_tag.last_seen) &&
-        (strcmp(current_last_id, new_tag.tag_id) == 0) &&
-        (current_last_type == new_tag.tag_type)) {
-        return;
-    }
+    logger.printfln("[NFC] Inserted new tag at index %d: %s, type: %u, last_seen: %u", 
+                      index, new_tag.tag_id, new_tag.tag_type, new_tag.last_seen);
 
-    // Schiebe den Puffer: Kopiere Eintrag 1 nach 0, 2 nach 1, ... und so weiter.
-    for (int i = 0; i < TAG_LIST_LENGTH - 1; i++) {
-        Config *src = static_cast<Config *>(seen_tags.get(i + 1));
-        Config *dest = static_cast<Config *>(seen_tags.get(i));
-        dest->get("tag_type")->updateUint(src->get("tag_type")->asUint());
-        dest->get("tag_id")->updateString(src->get("tag_id")->asString());
-        dest->get("last_seen")->updateUint(src->get("last_seen")->asUint());
-    }
-    // Setze den letzten Slot auf den neuen Tag:
-    last_slot->get("tag_type")->updateUint(new_tag.tag_type);
-    last_slot->get("tag_id")->updateString(new_tag.tag_id);
-    last_slot->get("last_seen")->updateUint(new_tag.last_seen);
-    logger.printfln("[NFC] Inserted new tag: %s, type: %u, last_seen: %u", new_tag.tag_id, new_tag.tag_type, new_tag.last_seen);
+    ring_buffer_tail = (ring_buffer_tail + 1) % TAG_LIST_LENGTH;
 }
 
 void NFC::update_seen_tags() {
 #if BUILD_IS_WARP2() || BUILD_IS_WARP3()
-    // Hardware-Daten einlesen und verarbeiten:
+    // Hardware-Daten einlesen:
     for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
         uint8_t tag_id_bytes[10];
         uint8_t tag_id_len = 0;
-        int result = tf_nfc_simple_get_tag_id(&device, i, &new_tags[i].tag_type, tag_id_bytes, &tag_id_len, &new_tags[i].last_seen);
+        tag_info_t hw_tag;
+        int result = tf_nfc_simple_get_tag_id(&device, i, &hw_tag.tag_type, tag_id_bytes, &tag_id_len, &hw_tag.last_seen);
         if (result != TF_E_OK) {
             if (!is_in_bootloader(result)) {
                 logger.printfln("[NFC] Hardware tag reading error for slot %d, rc: %d", i, result);
             }
             continue;
         }
-        tag_id_bytes_to_string(tag_id_bytes, tag_id_len, new_tags[i].tag_id);
+        tag_id_bytes_to_string(tag_id_bytes, tag_id_len, hw_tag.tag_id);
         logger.printfln("[NFC] Read hardware tag[%d]: %s, type: %u, last_seen: %u", 
-                         i, new_tags[i].tag_id, new_tags[i].tag_type, new_tags[i].last_seen);
-        // Einsortieren in den Ringpuffer:
-        insert_new_tag(new_tags[i]);
+                         i, hw_tag.tag_id, hw_tag.tag_type, hw_tag.last_seen);
+        insert_new_tag(hw_tag);
     }
 #else
     logger.printfln("[NFC] No hardware detected, skipping hardware tag update.");
@@ -405,94 +386,16 @@ void NFC::update_seen_tags() {
     }
 }
 
-
-// void NFC::update_seen_tags()
-// {
-// #if BUILD_IS_WARP2() || BUILD_IS_WARP3()
-//     for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
-//         uint8_t tag_id_bytes[10];
-//         uint8_t tag_id_len = 0;
-//         int result = tf_nfc_simple_get_tag_id(&device, i, &new_tags[i].tag_type, tag_id_bytes, &tag_id_len, &new_tags[i].last_seen);
-//         if (result != TF_E_OK) {
-//             if (!is_in_bootloader(result)) {
-//                 logger.printfln("[NFC] Abfrage von Tag-ID %d fehlgeschlagen, rc: %d", i, result);
-//             }
-//             continue;
-//         }
-//         tag_id_bytes_to_string(tag_id_bytes, tag_id_len, new_tags[i].tag_id);
-//         logger.printfln("[NFC] Hardware-Tag[%d]: %s, type: %u, last_seen: %u", i, new_tags[i].tag_id, new_tags[i].tag_type, new_tags[i].last_seen);
-//     }
-// #else
-//     // Ohne NFC-Hardware: Setze alle nicht-injected Tags auf "nicht gesehen"
-//     for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
-//         new_tags[i].tag_type = 0;
-//         new_tags[i].tag_id[0] = '\0';
-//         new_tags[i].last_seen = 0;
-//     }
-//     logger.printfln("[NFC] Kein NFC-Hardware vorhanden. Alle Hardware-Tags als 'nicht gesehen' markiert.");
-// #endif
-
-//     // Bearbeite den injizierten Tag (immer im letzten Slot)
-//     if (last_tag_injection == 0 || deadline_elapsed(last_tag_injection + 1000 * 60 * 60 * 24)) {
-//         last_tag_injection = 0;
-//         new_tags[TAG_LIST_LENGTH - 1].tag_type = 0;
-//         new_tags[TAG_LIST_LENGTH - 1].tag_id[0] = '\0';
-//         new_tags[TAG_LIST_LENGTH - 1].last_seen = 0;
-//         logger.printfln("[NFC] Injizierter Tag gelöscht, da last_tag_injection abgelaufen.");
-//     } else {
-//         new_tags[TAG_LIST_LENGTH - 1].tag_type = inject_tag.get("tag_type")->asUint();
-//         strncpy(new_tags[TAG_LIST_LENGTH - 1].tag_id, inject_tag.get("tag_id")->asEphemeralCStr(), sizeof(new_tags[TAG_LIST_LENGTH - 1].tag_id));
-//         new_tags[TAG_LIST_LENGTH - 1].last_seen = millis() - last_tag_injection;
-//         logger.printfln("[NFC] Injizierter Tag gesetzt: %s, type: %u, last_seen: %u", 
-//                          new_tags[TAG_LIST_LENGTH - 1].tag_id, 
-//                          new_tags[TAG_LIST_LENGTH - 1].tag_type, 
-//                          new_tags[TAG_LIST_LENGTH - 1].last_seen);
-//     }
-
-//     // Aktualisiere den Config-Zustand
-//     for (size_t i = 0; i < TAG_LIST_LENGTH; ++i) {
-//         Config *seen_tag_state = static_cast<Config *>(seen_tags.get(i));
-//         tag_info_t *new_tag = new_tags + i;
-//         seen_tag_state->get("last_seen")->updateUint(new_tag->last_seen);
-//         seen_tag_state->get("tag_type")->updateUint(new_tag->tag_type);
-//         seen_tag_state->get("tag_id")->updateString(new_tag->tag_id);
-//     }
-
-//     // Vergleiche neue Liste mit alter Liste
-//     for (int new_idx = 0; new_idx < TAG_LIST_LENGTH; ++new_idx) {
-//         if (new_tags[new_idx].last_seen == 0)
-//             continue;
-
-//         int min_old_idx = -1;
-//         for (int old_idx = 0; old_idx < TAG_LIST_LENGTH; ++old_idx) {
-//             if (old_tags[old_idx].last_seen == 0)
-//                 continue;
-//             if(strncmp(old_tags[old_idx].tag_id, new_tags[new_idx].tag_id, NFC_TAG_ID_STRING_LENGTH) != 0)
-//                 continue;
-//             if (min_old_idx == -1 || old_tags[min_old_idx].last_seen > old_tags[old_idx].last_seen)
-//                 min_old_idx = old_idx;
-//         }
-//         if (min_old_idx == -1) {
-//             logger.printfln("[NFC] Neuer Tag erkannt an Index %d: %s", new_idx, new_tags[new_idx].tag_id);
-//             tag_seen(&new_tags[new_idx], new_idx == TAG_LIST_LENGTH - 1);
-//             continue;
-//         }
-//         bool old_seen = old_tags[min_old_idx].last_seen < DETECTION_THRESHOLD_MS;
-//         bool new_seen = new_tags[new_idx].last_seen < DETECTION_THRESHOLD_MS;
-//         if (!old_seen && new_seen) {
-//             logger.printfln("[NFC] Tag wurde erneut als neu erkannt an Index %d: %s", new_idx, new_tags[new_idx].tag_id);
-//             tag_seen(&new_tags[new_idx], new_idx == TAG_LIST_LENGTH - 1);
-//             continue;
-//         }
-//     }
-
-//     // Tausche alte und neue Listen (Pointertausch)
-//     tag_info_t *tmp = old_tags;
-//     old_tags = new_tags;
-//     new_tags = tmp;
-//     logger.printfln("[NFC] update_seen_tags abgeschlossen. Pointertausch durchgeführt.");
-// }
-
+NFC::tag_info_t NFC::getLatestTag() {
+    int index = (ring_buffer_tail - 1 + TAG_LIST_LENGTH) % TAG_LIST_LENGTH;
+    Config *slot = static_cast<Config *>(seen_tags.get(index));
+    tag_info_t latest;
+    latest.tag_type = slot->get("tag_type")->asUint();
+    String id = slot->get("tag_id")->asString();
+    id.toCharArray(latest.tag_id, sizeof(latest.tag_id));
+    latest.last_seen = slot->get("last_seen")->asUint();
+    return latest;
+}
 
 void NFC::setup_auth_tags()
 {
@@ -518,14 +421,14 @@ void NFC::setup()
 {
     setup_nfc();
 
-
     api.restorePersistentConfig("nfc/config", &config);
     setup_auth_tags();
 
+    // Initialisiere den Ringpuffer: Füge TAG_LIST_LENGTH Einträge hinzu.
     for (int i = 0; i < TAG_LIST_LENGTH; ++i) {
         seen_tags.add();
     }
-    if (device_found){
+    if (device_found) {
        task_scheduler.scheduleWithFixedDelay([this]() {
          this->check_nfc_state();
        }, 5_m, 5_m);
@@ -548,7 +451,6 @@ void NFC::register_urls()
         logger.printfln("[NFC] inject_tag called: tag_id = %s, tag_type = %u, last_tag_injection = %u", 
                           inject_tag.get("tag_id")->asEphemeralCStr(), 
                           inject_tag.get("tag_type")->asUint(), last_tag_injection);
-        // Falls last_tag_injection == 0, reduziere um 1
         if (last_tag_injection == 0) {
             last_tag_injection -= 1;
         }
@@ -564,7 +466,7 @@ void NFC::register_urls()
         logger.printfln("[NFC] inject_tag_start called: tag_id = %s, tag_type = %u, last_tag_injection = %u", 
                           inject_tag.get("tag_id")->asEphemeralCStr(), 
                           inject_tag.get("tag_type")->asUint(), last_tag_injection);
-        if (last_tag_injection == 0){
+        if (last_tag_injection == 0) {
             last_tag_injection -= 1;
         }
         #if !(BUILD_IS_WARP2() || BUILD_IS_WARP3())
@@ -579,7 +481,7 @@ void NFC::register_urls()
         logger.printfln("[NFC] inject_tag_stop called: tag_id = %s, tag_type = %u, last_tag_injection = %u", 
                           inject_tag.get("tag_id")->asEphemeralCStr(), 
                           inject_tag.get("tag_type")->asUint(), last_tag_injection);
-        if (last_tag_injection == 0){
+        if (last_tag_injection == 0) {
             last_tag_injection -= 1;
         }
         #if !(BUILD_IS_WARP2() || BUILD_IS_WARP3())
@@ -589,7 +491,6 @@ void NFC::register_urls()
 
     this->DeviceModule::register_urls();
 }
-
 
 void NFC::loop()
 {

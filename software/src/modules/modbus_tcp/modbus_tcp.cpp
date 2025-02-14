@@ -26,7 +26,7 @@
 #include <esp_modbus_slave.h>
 #include <esp_netif.h>
 #include <math.h>
-
+#include <modules/nfc/nfc.h>
 #include "event_log_prefix.h"
 #include "build.h"
 #include "string_builder.h"
@@ -155,18 +155,30 @@ void ModbusTcp::pre_setup()
 }
 
 // TODO this requires the NFC module!
+// static inline void fillTagCache(Option<NFC::tag_info_t> &tag) {
+//     if (tag.is_none()) {
+//         const auto &seen_tag = nfc.old_tags[0];
+//         const auto &injected_tag = nfc.old_tags[TAG_LIST_LENGTH - 1];
+//         if ((seen_tag.last_seen == 0 || seen_tag.last_seen > injected_tag.last_seen) && injected_tag.last_seen > 0)
+//             tag = {injected_tag};
+//         else
+//             tag = {seen_tag};
+
+//         int written = remove_separator(tag.unwrap().tag_id, tag.unwrap().tag_id);
+//         memset(tag.unwrap().tag_id + written, 0, sizeof(tag.unwrap().tag_id) - written);
+//         //swap_bytes(tag.unwrap().tag_id, 20);
+//     }
+// }
+
+
 static inline void fillTagCache(Option<NFC::tag_info_t> &tag) {
     if (tag.is_none()) {
-        const auto &seen_tag = nfc.old_tags[0];
-        const auto &injected_tag = nfc.old_tags[TAG_LIST_LENGTH - 1];
-        if ((seen_tag.last_seen == 0 || seen_tag.last_seen > injected_tag.last_seen) && injected_tag.last_seen > 0)
-            tag = {injected_tag};
-        else
-            tag = {seen_tag};
-
+        // Use the latest tag from the ring buffer.
+        tag = { nfc.getLatestTag() };
+        
         int written = remove_separator(tag.unwrap().tag_id, tag.unwrap().tag_id);
         memset(tag.unwrap().tag_id + written, 0, sizeof(tag.unwrap().tag_id) - written);
-        //swap_bytes(tag.unwrap().tag_id, 20);
+        // swap_bytes(tag.unwrap().tag_id, 20);
     }
 }
 

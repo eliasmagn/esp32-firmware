@@ -1,22 +1,3 @@
-/* esp32-firmware
- * Copyright (C) 2020-2021 Erik Fleckstein <erik@tinkerforge.com>
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 02111-1307, USA.
- */
-
 #pragma once
 
 #include "device_module.h"
@@ -34,9 +15,10 @@
 // For hex strings: two chars per byte plus a separator between each byte
 #define NFC_TAG_ID_STRING_LENGTH (NFC_TAG_ID_LENGTH * 3 - 1)
 
+// Ringbuffergröße (Anzahl der Tag-Einträge)
+// Hier auf 8 Einträge festgelegt – passe diesen Wert nach Bedarf an.
 #define TAG_LIST_LENGTH 8
 
-// Die Hardware-spezifische Implementierung (z.B. Aufrufe an das Bricklet) wird nur für WAPR2/WAPR3 kompiliert.
 class NFC : public DeviceModule<TF_NFC,
                                 tf_nfc_create,
                                 tf_nfc_get_bootloader_mode,
@@ -71,15 +53,16 @@ public:
 
     void update_seen_tags();
     void tag_seen(tag_info_t *tag, bool injected);
-    // setup_nfc() initialisiert hardwarebezogene Funktionen – nur auf WAPR2/WAPR3 aktiv
     void setup_nfc();
     void check_nfc_state();
     uint8_t get_user_id(tag_info_t *tag, uint8_t *tag_idx);
-
     void remove_user(uint8_t user_id);
 
-    // NEU: Methode zur Einsortierung eines neuen Tags in den Ringpuffer
+    // NEU: Methode zur indexbasierten Einsortierung eines neuen Tags in den Ringpuffer
     void insert_new_tag(const tag_info_t &new_tag);
+
+    // NEU: Getter-Funktion, um den aktuellsten Tag abzurufen
+    tag_info_t getLatestTag();
 
 #if MODULE_AUTOMATION_AVAILABLE()
     bool has_triggered(const Config *conf, void *data) override;
@@ -103,8 +86,9 @@ public:
     uint32_t last_tag_injection = 0;
     int tag_injection_action = 0;
 
-    tag_info_t *old_tags = nullptr;
-    tag_info_t *new_tags = nullptr;
+    // Der Ringpuffer wird über "seen_tags" realisiert.
+    // ring_buffer_tail gibt den nächsten Einfügeindex an.
+    int ring_buffer_tail;
 };
 
 #include "module_available_end.h"
