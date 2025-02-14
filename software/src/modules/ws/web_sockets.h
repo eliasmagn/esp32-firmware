@@ -60,6 +60,7 @@ public:
     WebSockets() : worker_active(WEBSOCKET_WORKER_DONE) {}
 
     void pre_setup();
+    void pre_reboot();
     void start(const char *uri, const char *state_path, httpd_handle_t httpd, const char *supported_subprotocol = nullptr);
 
     bool sendToClient(const char *payload, size_t payload_len, int sock, httpd_ws_type_t ws_type = HTTPD_WS_TYPE_TEXT);
@@ -71,6 +72,7 @@ public:
     bool haveActiveClient();
     void pingActiveClients();
     void checkActiveClients();
+    void closeLRUClient();
     void receivedPong(int fd);
 
     void cleanUpQueue();
@@ -93,13 +95,13 @@ public:
     // it could be called by another method that locked the mutex.
     std::recursive_mutex keep_alive_mutex;
     int keep_alive_fds[MAX_WEB_SOCKET_CLIENTS];
-    uint32_t keep_alive_last_pong[MAX_WEB_SOCKET_CLIENTS];
+    micros_t keep_alive_last_pong[MAX_WEB_SOCKET_CLIENTS];
 
     std::recursive_mutex work_queue_mutex;
     std::deque<ws_work_item> work_queue;
 
     std::atomic<uint8_t> worker_active;
-    uint32_t last_worker_run = 0;
+    micros_t last_worker_run = 0_us;
     uint32_t worker_poll_count = 0;
 
     httpd_handle_t httpd;
@@ -108,4 +110,6 @@ public:
     std::function<void(const int fd, httpd_ws_frame_t *ws_pkt)> on_binary_data_received_fn;
 
     ConfigRoot state;
+
+    const char *handler_uri;
 };
