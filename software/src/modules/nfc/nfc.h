@@ -36,6 +36,7 @@
 
 #define TAG_LIST_LENGTH 9
 
+// Die Hardware-spezifische Implementierung (z.B. Aufrufe an das Bricklet) wird nur für WAPR2/WAPR3 kompiliert.
 class NFC : public DeviceModule<TF_NFC,
                                 tf_nfc_create,
                                 tf_nfc_get_bootloader_mode,
@@ -57,19 +58,20 @@ public:
     struct tag_info_t {
         uint32_t last_seen;
         uint8_t tag_type;
-        char tag_id[NFC_TAG_ID_STRING_LENGTH + 1]; // allow null terminator here
+        char tag_id[NFC_TAG_ID_STRING_LENGTH + 1]; // Platz für Nullterminator
     };
 
     struct auth_tag_t {
         uint8_t tag_type;
         uint8_t user_id;
-        char tag_id[NFC_TAG_ID_STRING_LENGTH + 1]; // allow null terminator here
+        char tag_id[NFC_TAG_ID_STRING_LENGTH + 1]; // Platz für Nullterminator
     };
 
     static_assert(sizeof(auth_tag_t::tag_id) == sizeof(tag_info_t::tag_id));
 
     void update_seen_tags();
     void tag_seen(tag_info_t *tag, bool injected);
+    // setup_nfc() initialisiert hardwarebezogene Funktionen – nur auf WAPR2/WAPR3 aktiv
     void setup_nfc();
     void check_nfc_state();
     uint8_t get_user_id(tag_info_t *tag, uint8_t *tag_idx);

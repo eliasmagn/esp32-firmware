@@ -33,12 +33,21 @@
 
 #define DETECTION_THRESHOLD_MS 2000
 
-NFC::NFC() : DeviceModule(nfc_bricklet_firmware_bin_data,
-                          nfc_bricklet_firmware_bin_length,
-                          "nfc",
-                          "NFC",
-                          "NFC",
-                          [this](){this->setup_nfc();}) {}
+// Konstruktor: Wird hardwarebezogener Code nur auf WARP2/WARP3 initialisiert,
+// ansonsten wird ein Dummy-Pfad gewählt.
+NFC::NFC()
+#if BUILD_IS_WARP2() || BUILD_IS_WARP3()
+    : DeviceModule(nfc_bricklet_firmware_bin_data,
+                   nfc_bricklet_firmware_bin_length,
+                   "nfc",
+                   "NFC",
+                   "NFC",
+                   [this](){ this->setup_nfc(); })
+#else
+    : DeviceModule(nullptr, 0, "nfc", "NFC", "NFC", [](){})
+#endif
+{
+}
 
 void NFC::pre_setup()
 {
@@ -74,14 +83,14 @@ void NFC::pre_setup()
     }), [this](Config &cfg, ConfigSource source) -> String {
         Config *tags = (Config *)cfg.get("authorized_tags");
 
-        // Check tag_id format
+        // Prüfe Tag-ID-Format
         for (size_t tag = 0; tag < tags->count(); ++tag) {
             String id_copy = tags->get(tag)->get("tag_id")->asString();
             id_copy.toUpperCase();
             tags->get(tag)->get("tag_id")->updateString(id_copy);
 
             if (id_copy.length() != 0 && id_copy.length() % 3 != 2)
-                return "Tag ID has unexpected length. Expected format is hex bytes separated by colons. For example \"01:23:ab:3d\".";
+                return "Tag ID hat unerwartete Länge. Erwartetes Format: Hex-Bytes, getrennt durch Doppelpunkte (z.B. \"01:23:ab:3d\").";
 
             for(int i = 0; i < id_copy.length(); ++i) {
                 char c = id_copy.charAt(i);
@@ -89,21 +98,17 @@ void NFC::pre_setup()
                     continue;
                 if (i % 3 == 2 && c == ':')
                     continue;
-                return "Tag ID contains unexpected character. Expected format is hex bytes separated by colons. For example \"01:23:ab:3d\".";
+                return "Tag ID enthält unerwartetes Zeichen. Erwartetes Format: Hex-Bytes, getrennt durch Doppelpunkte (z.B. \"01:23:ab:3d\").";
             }
         }
 
-        // Add more validation above this block!
         if (source == ConfigSource::File) {
-            // The validation below was missing in old firmwares.
-            // To make sure a config that is stored in the ESP's flash
-            // can be loaded on start-up, fix the mappings instead of
-            // returning an error.
+            // Alte Configs werden automatisch korrigiert
             bool update_file = false;
             for (size_t tag = 0; tag < tags->count(); ++tag) {
                 uint8_t user_id = tags->get(tag)->get("user_id")->asUint();
                 if (!users.is_user_configured(user_id)) {
-                    logger.printfln("Fixing NFC tag %s referencing a deleted user.", tags->get(tag)->get("tag_id")->asEphemeralCStr());
+                    logger.printfln("Korrigiere NFC Tag %s, der einen gelöschten User referenziert.", tags->get(tag)->get("tag_id")->asEphemeralCStr());
                     tags->get(tag)->get("user_id")->updateUint(0);
                     update_file = true;
                 }
@@ -112,11 +117,10 @@ void NFC::pre_setup()
                 API::writeConfig("nfc/config", &cfg);
 
         } else {
-            // Check user_id_mappings
             for (size_t tag = 0; tag < tags->count(); ++tag) {
                 uint8_t user_id = tags->get(tag)->get("user_id")->asUint();
                 if (!users.is_user_configured(user_id))
-                    return String("Unknown user with ID ") + (int)user_id + ".";
+                    return String("Unbekannter User mit ID ") + (int)user_id + ".";
             }
         }
 
@@ -132,7 +136,7 @@ void NFC::pre_setup()
         cfg.get("tag_id")->updateString(id_copy);
 
         if (id_copy.length() != 0 && id_copy.length() % 3 != 2)
-            return "Tag ID has unexpected length. Expected format is hex bytes separated by colons. For example \"01:23:ab:3d\".";
+            return "Tag ID hat unerwartete Länge. Erwartetes Format: Hex-Bytes, getrennt durch Doppelpunkte (z.B. \"01:23:ab:3d\").";
 
         for(int i = 0; i < id_copy.length(); ++i) {
             char c = id_copy.charAt(i);
@@ -140,7 +144,7 @@ void NFC::pre_setup()
                 continue;
             if (i % 3 == 2 && c == ':')
                 continue;
-            return "Tag ID contains unexpected character. Expected format is hex bytes separated by colons. For example \"01:23:ab:3d\".";
+            return "Tag ID enthält unerwartetes Zeichen. Erwartetes Format: Hex-Bytes, getrennt durch Doppelpunkte (z.B. \"01:23:ab:3d\").";
         }
 
         return "";
@@ -169,8 +173,6 @@ void NFC::pre_setup()
             inject_tag.get("tag_id")->updateString(config->get("tag_id")->asString());
             last_tag_injection = millis();
             tag_injection_action = config->get("action")->asUint();
-            // 0 is the marker that no injection happened or the last one was handled.
-            // Fake that we were one ms faster.
             if (last_tag_injection == 0)
                 last_tag_injection -= 1;
         },
@@ -185,8 +187,13 @@ void NFC::pre_setup()
     });
 }
 
+//
+// Hardware-spezifische Initialisierung – nur aktiv, wenn wir auf WARP2 oder WARP3 bauen.
+// Ansonsten wird ein Dummy-Pfad gewählt, der lediglich die nötigen Datenstrukturen anlegt.
+//
 void NFC::setup_nfc()
 {
+#if BUILD_IS_WARP2() || BUILD_IS_WARP3()
     if (!this->DeviceModule::setup_device()) {
         return;
     }
@@ -194,16 +201,16 @@ void NFC::setup_nfc()
     int result = tf_nfc_set_mode(&device, TF_NFC_MODE_SIMPLE);
     if (result != TF_E_OK) {
         if (!is_in_bootloader(result)) {
-            logger.printfln("NFC set mode failed (rc %d). Disabling NFC support.", result);
+            logger.printfln("NFC set mode fehlgeschlagen (rc %d). NFC-Unterstützung wird deaktiviert.", result);
         }
         return;
     }
 
-    // Clear tag list
+    // Leere Tag-Liste
     result = tf_nfc_simple_get_tag_id(&device, 255, nullptr, nullptr, nullptr, nullptr);
     if (result != TF_E_OK) {
         if (!is_in_bootloader(result)) {
-            logger.printfln("Clearing NFC tag list failed (rc %d). Disabling NFC support.", result);
+            logger.printfln("Löschen der NFC Tag-Liste fehlgeschlagen (rc %d). NFC-Unterstützung wird deaktiviert.", result);
         }
         return;
     }
@@ -218,22 +225,36 @@ void NFC::setup_nfc()
     automation.set_enabled(AutomationTriggerID::NFC, true);
     automation.set_enabled(AutomationActionID::NFCInjectTag, true);
 #endif
+#else
+    // Simuliere NFC: Erzeuge leere Tag-Listen, damit injected Tags verarbeitet werden können
+    initialized = true;
+    api.addFeature("nfc");
+    old_tags = new tag_info_t[TAG_LIST_LENGTH];
+    new_tags = new tag_info_t[TAG_LIST_LENGTH];
+    memset(old_tags, 0, sizeof(tag_info_t) * TAG_LIST_LENGTH);
+    memset(new_tags, 0, sizeof(tag_info_t) * TAG_LIST_LENGTH);
+#endif
 }
 
+//
+// Hardwarebezogene Statusprüfung – nur aktiv bei WARP2/WARP3.
+//
 void NFC::check_nfc_state()
 {
+#if BUILD_IS_WARP2() || BUILD_IS_WARP3()
     uint8_t mode = 0;
     int result = tf_nfc_get_mode(&device, &mode);
     if (result != TF_E_OK) {
         if (!is_in_bootloader(result)) {
-            logger.printfln("Failed to get NFC mode, rc: %d", result);
+            logger.printfln("Abfrage des NFC-Modus fehlgeschlagen, rc: %d", result);
         }
         return;
     }
     if (mode != TF_NFC_MODE_SIMPLE) {
-        logger.printfln("NFC mode invalid. Did the bricklet reset?");
+        logger.printfln("NFC-Modus ungültig. Möglicherweise hat das Bricklet einen Reset durchgeführt?");
         setup_nfc();
     }
+#endif
 }
 
 uint8_t NFC::get_user_id(tag_info_t *tag, uint8_t *tag_idx)
@@ -241,8 +262,8 @@ uint8_t NFC::get_user_id(tag_info_t *tag, uint8_t *tag_idx)
     for (uint8_t i = 0; i < auth_tag_count; ++i) {
         const auto &auth_tag = auth_tags[i];
 
-        if (auth_tag.tag_type == tag->tag_type
-         && strncmp(auth_tag.tag_id, tag->tag_id, sizeof(auth_tag.tag_id)) == 0) {
+        if (auth_tag.tag_type == tag->tag_type &&
+            strncmp(auth_tag.tag_id, tag->tag_id, sizeof(auth_tag.tag_id)) == 0) {
             *tag_idx = i;
             return auth_tag.user_id;
         }
@@ -267,7 +288,6 @@ void NFC::tag_seen(tag_info_t *tag, bool injected)
     uint8_t user_id = get_user_id(tag, &idx);
 
     if (user_id != 0) {
-        // Found a new authorized tag.
         bool blink_handled = false;
 #if MODULE_OCPP_AVAILABLE()
         blink_handled = ocpp.on_tag_seen(tag->tag_id);
@@ -280,9 +300,10 @@ void NFC::tag_seen(tag_info_t *tag, bool injected)
         auth_info.get("tag_type")->updateUint(tag->tag_type);
         auth_info.get("tag_id")->updateString(tag->tag_id);
 
-        users.trigger_charge_action(user_id, injected ? USERS_AUTH_TYPE_NFC_INJECTION : USERS_AUTH_TYPE_NFC, auth_info.value,
-                injected ? tag_injection_action : TRIGGER_CHARGE_ANY, 3_s, deadtime_post_start);
-
+        users.trigger_charge_action(user_id, injected ? USERS_AUTH_TYPE_NFC_INJECTION : USERS_AUTH_TYPE_NFC,
+                                      auth_info.value,
+                                      injected ? tag_injection_action : TRIGGER_CHARGE_ANY,
+                                      3_s, deadtime_post_start);
     } else {
         bool blink_handled = false;
 #if MODULE_OCPP_AVAILABLE()
@@ -301,6 +322,7 @@ void NFC::tag_seen(tag_info_t *tag, bool injected)
 
 const char *lookup = "0123456789ABCDEF";
 
+// Hilfsfunktion: Wandelt Byte-Array in einen Hex-String (mit Doppelpunkten) um.
 void tag_id_bytes_to_string(const uint8_t *tag_id, uint8_t tag_id_len, char buf[NFC_TAG_ID_STRING_LENGTH + 1])
 {
     for (int i = 0; i < tag_id_len; ++i) {
@@ -317,22 +339,36 @@ void tag_id_bytes_to_string(const uint8_t *tag_id, uint8_t tag_id_len, char buf[
         buf[3 * tag_id_len - 1] = '\0';
 }
 
-void NFC::update_seen_tags()
+//
+// update_seen_tags() – Liest die aktuell sichtbaren Tags ein.
+// Der hardwarebezogene Teil (Über das Bricklet) wird nur bei WARP2/WARP3 genutzt;
+// ansonsten wird angenommen, dass keine Tag-Erfassung stattfindet (außer evtl. injected tags).
+//
+/* void NFC::update_seen_tags()
 {
+#if BUILD_IS_WARP2() || BUILD_IS_WARP3()
     for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
         uint8_t tag_id_bytes[10];
         uint8_t tag_id_len = 0;
         int result = tf_nfc_simple_get_tag_id(&device, i, &new_tags[i].tag_type, tag_id_bytes, &tag_id_len, &new_tags[i].last_seen);
         if (result != TF_E_OK) {
             if (!is_in_bootloader(result)) {
-                logger.printfln("Failed to get tag id %d, rc: %d", i, result);
+                logger.printfln("Abfrage von Tag-ID %d fehlgeschlagen, rc: %d", i, result);
             }
             continue;
         }
-
         tag_id_bytes_to_string(tag_id_bytes, tag_id_len, new_tags[i].tag_id);
     }
+#else
+    // Ohne NFC-Hardware: Setze alle nicht-injected Tags auf "nicht gesehen"
+    for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
+        new_tags[i].tag_type = 0;
+        new_tags[i].tag_id[0] = '\0';
+        new_tags[i].last_seen = 0;
+    }
+#endif
 
+    // Unabhängig von der Hardware: Behandlung von injected tags (immer aktiv)
     if (last_tag_injection == 0 || deadline_elapsed(last_tag_injection + 1000 * 60 * 60 * 24)) {
         last_tag_injection = 0;
         new_tags[TAG_LIST_LENGTH - 1].tag_type = 0;
@@ -344,66 +380,135 @@ void NFC::update_seen_tags()
         new_tags[TAG_LIST_LENGTH - 1].last_seen = millis() - last_tag_injection;
     }
 
-    // update state
+    // Aktualisiere den Config-Zustand
     for (size_t i = 0; i < TAG_LIST_LENGTH; ++i) {
         Config *seen_tag_state = static_cast<Config *>(seen_tags.get(i));
         tag_info_t *new_tag = new_tags + i;
-
         seen_tag_state->get("last_seen")->updateUint(new_tag->last_seen);
         seen_tag_state->get("tag_type")->updateUint(new_tag->tag_type);
         seen_tag_state->get("tag_id")->updateString(new_tag->tag_id);
     }
 
-    // compare new list with old
+    // Vergleiche alte und neue Tag-Liste, um "neue" Ereignisse zu erkennen
     for (int new_idx = 0; new_idx < TAG_LIST_LENGTH; ++new_idx) {
         if (new_tags[new_idx].last_seen == 0)
             continue;
 
-        // Don't stop searching after the first old tag with a matching ID.
-        // There could be another entry (typically the injected one) with a lower last_seen value.
         int min_old_idx = -1;
         for (int old_idx = 0; old_idx < TAG_LIST_LENGTH; ++old_idx) {
             if (old_tags[old_idx].last_seen == 0)
                 continue;
-
-            if(strncmp(old_tags[old_idx].tag_id,
-                       new_tags[new_idx].tag_id,
-                       NFC_TAG_ID_STRING_LENGTH) != 0)
+            if(strncmp(old_tags[old_idx].tag_id, new_tags[new_idx].tag_id, NFC_TAG_ID_STRING_LENGTH) != 0)
                 continue;
-
-            if (min_old_idx == -1 ||
-                old_tags[min_old_idx].last_seen > old_tags[old_idx].last_seen)
+            if (min_old_idx == -1 || old_tags[min_old_idx].last_seen > old_tags[old_idx].last_seen)
                 min_old_idx = old_idx;
         }
-
         if (min_old_idx == -1) {
-            // This tag is in the new list but not in the old.
-            // We don't care about the detection threshold here,
-            // because this will probably only happen if this
-            // task slowed down because something else blocked
-            // for more than one second.
             tag_seen(&new_tags[new_idx], new_idx == TAG_LIST_LENGTH - 1);
             continue;
         }
-
         bool old_seen = old_tags[min_old_idx].last_seen < DETECTION_THRESHOLD_MS;
         bool new_seen = new_tags[new_idx].last_seen < DETECTION_THRESHOLD_MS;
-
         if (!old_seen && new_seen) {
-            // This tag was in the old list as well,
-            // but with a last_seen value over the detection threshold.
-            // -> The tag was seen, then removed and then seen again.
-            // If old_seen was also true, this would be a tag that
-            // is detected continously, which only counts as one detection.
             tag_seen(&new_tags[new_idx], new_idx == TAG_LIST_LENGTH - 1);
             continue;
         }
     }
 
+    // Tausche alte und neue Listen (Pointer-Tausch)
     tag_info_t *tmp = old_tags;
     old_tags = new_tags;
     new_tags = tmp;
+} */
+
+
+void NFC::update_seen_tags()
+{
+#if BUILD_IS_WARP2() || BUILD_IS_WARP3()
+    for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
+        uint8_t tag_id_bytes[10];
+        uint8_t tag_id_len = 0;
+        int result = tf_nfc_simple_get_tag_id(&device, i, &new_tags[i].tag_type, tag_id_bytes, &tag_id_len, &new_tags[i].last_seen);
+        if (result != TF_E_OK) {
+            if (!is_in_bootloader(result)) {
+                logger.printfln("[NFC] Abfrage von Tag-ID %d fehlgeschlagen, rc: %d", i, result);
+            }
+            continue;
+        }
+        tag_id_bytes_to_string(tag_id_bytes, tag_id_len, new_tags[i].tag_id);
+        logger.printfln("[NFC] Hardware-Tag[%d]: %s, type: %u, last_seen: %u", i, new_tags[i].tag_id, new_tags[i].tag_type, new_tags[i].last_seen);
+    }
+#else
+    // Ohne NFC-Hardware: Setze alle nicht-injected Tags auf "nicht gesehen"
+    for (int i = 0; i < TAG_LIST_LENGTH - 1; ++i) {
+        new_tags[i].tag_type = 0;
+        new_tags[i].tag_id[0] = '\0';
+        new_tags[i].last_seen = 0;
+    }
+    logger.printfln("[NFC] Kein NFC-Hardware vorhanden. Alle Hardware-Tags als 'nicht gesehen' markiert.");
+#endif
+
+    // Bearbeite den injizierten Tag (immer im letzten Slot)
+    if (last_tag_injection == 0 || deadline_elapsed(last_tag_injection + 1000 * 60 * 60 * 24)) {
+        last_tag_injection = 0;
+        new_tags[TAG_LIST_LENGTH - 1].tag_type = 0;
+        new_tags[TAG_LIST_LENGTH - 1].tag_id[0] = '\0';
+        new_tags[TAG_LIST_LENGTH - 1].last_seen = 0;
+        logger.printfln("[NFC] Injizierter Tag gelöscht, da last_tag_injection abgelaufen.");
+    } else {
+        new_tags[TAG_LIST_LENGTH - 1].tag_type = inject_tag.get("tag_type")->asUint();
+        strncpy(new_tags[TAG_LIST_LENGTH - 1].tag_id, inject_tag.get("tag_id")->asEphemeralCStr(), sizeof(new_tags[TAG_LIST_LENGTH - 1].tag_id));
+        new_tags[TAG_LIST_LENGTH - 1].last_seen = millis() - last_tag_injection;
+        logger.printfln("[NFC] Injizierter Tag gesetzt: %s, type: %u, last_seen: %u", 
+                         new_tags[TAG_LIST_LENGTH - 1].tag_id, 
+                         new_tags[TAG_LIST_LENGTH - 1].tag_type, 
+                         new_tags[TAG_LIST_LENGTH - 1].last_seen);
+    }
+
+    // Aktualisiere den Config-Zustand
+    for (size_t i = 0; i < TAG_LIST_LENGTH; ++i) {
+        Config *seen_tag_state = static_cast<Config *>(seen_tags.get(i));
+        tag_info_t *new_tag = new_tags + i;
+        seen_tag_state->get("last_seen")->updateUint(new_tag->last_seen);
+        seen_tag_state->get("tag_type")->updateUint(new_tag->tag_type);
+        seen_tag_state->get("tag_id")->updateString(new_tag->tag_id);
+    }
+
+    // Vergleiche neue Liste mit alter Liste
+    for (int new_idx = 0; new_idx < TAG_LIST_LENGTH; ++new_idx) {
+        if (new_tags[new_idx].last_seen == 0)
+            continue;
+
+        int min_old_idx = -1;
+        for (int old_idx = 0; old_idx < TAG_LIST_LENGTH; ++old_idx) {
+            if (old_tags[old_idx].last_seen == 0)
+                continue;
+            if(strncmp(old_tags[old_idx].tag_id, new_tags[new_idx].tag_id, NFC_TAG_ID_STRING_LENGTH) != 0)
+                continue;
+            if (min_old_idx == -1 || old_tags[min_old_idx].last_seen > old_tags[old_idx].last_seen)
+                min_old_idx = old_idx;
+        }
+        if (min_old_idx == -1) {
+            logger.printfln("[NFC] Neuer Tag erkannt an Index %d: %s", new_idx, new_tags[new_idx].tag_id);
+            tag_seen(&new_tags[new_idx], new_idx == TAG_LIST_LENGTH - 1);
+            continue;
+        }
+        bool old_seen = old_tags[min_old_idx].last_seen < DETECTION_THRESHOLD_MS;
+        bool new_seen = new_tags[new_idx].last_seen < DETECTION_THRESHOLD_MS;
+        if (!old_seen && new_seen) {
+            logger.printfln("[NFC] Tag wurde erneut als neu erkannt an Index %d: %s", new_idx, new_tags[new_idx].tag_id);
+            tag_seen(&new_tags[new_idx], new_idx == TAG_LIST_LENGTH - 1);
+            continue;
+        }
+    }
+
+    // Tausche alte und neue Listen (Pointertausch)
+    tag_info_t *tmp = old_tags;
+    old_tags = new_tags;
+    new_tags = tmp;
+    logger.printfln("[NFC] update_seen_tags abgeschlossen. Pointertausch durchgeführt.");
 }
+
 
 void NFC::setup_auth_tags()
 {
@@ -417,7 +522,6 @@ void NFC::setup_auth_tags()
 
     for (size_t i = 0; i < auth_tag_count; ++i) {
         const auto tag = auth_tags_cfg->get(i);
-
         auth_tags[i].tag_type = tag->get("tag_type")->asUint();
         auth_tags[i].user_id = tag->get("user_id")->asUint();
         tag->get("tag_id")->asString().toCharArray(auth_tags[i].tag_id, sizeof(auth_tags[i].tag_id));
@@ -426,11 +530,33 @@ void NFC::setup_auth_tags()
     this->deadtime_post_start = seconds_t{config.get("deadtime_post_start")->asUint()};
 }
 
+// void NFC::setup()
+// {
+//     setup_nfc();
+//     if (!device_found)
+//         return;
+
+//     api.restorePersistentConfig("nfc/config", &config);
+//     setup_auth_tags();
+
+//     for (int i = 0; i < TAG_LIST_LENGTH; ++i) {
+//         seen_tags.add();
+//     }
+
+//     task_scheduler.scheduleWithFixedDelay([this]() {
+//         this->check_nfc_state();
+//     }, 5_m, 5_m);
+
+//     task_scheduler.scheduleWithFixedDelay([this]() {
+//         this->update_seen_tags();
+//     }, 300_ms);
+// }
+
+
 void NFC::setup()
 {
     setup_nfc();
-    if (!device_found)
-        return;
+
 
     api.restorePersistentConfig("nfc/config", &config);
     setup_auth_tags();
@@ -438,49 +564,103 @@ void NFC::setup()
     for (int i = 0; i < TAG_LIST_LENGTH; ++i) {
         seen_tags.add();
     }
+    if (device_found){
+       task_scheduler.scheduleWithFixedDelay([this]() {
+         this->check_nfc_state();
+       }, 5_m, 5_m);
 
-    task_scheduler.scheduleWithFixedDelay([this]() {
-        this->check_nfc_state();
-    }, 5_m, 5_m);
-
-    task_scheduler.scheduleWithFixedDelay([this]() {
-        this->update_seen_tags();
-    }, 300_ms);
+       task_scheduler.scheduleWithFixedDelay([this]() {
+          this->update_seen_tags();
+       }, 300_ms);
+    }
 }
+
+
+//  void NFC::register_urls()
+// {
+//     api.addState("nfc/seen_tags", &seen_tags, {}, {"tag_id", "tag_type"});
+//     api.addPersistentConfig("nfc/config", &config, {}, {"tag_id", "tag_type"});
+//     api.addCommand("nfc/inject_tag", &inject_tag, {"tag_id", "tag_type"}, [this](String &/*errmsg*/) {
+//         last_tag_injection = millis();
+//         tag_injection_action = TRIGGER_CHARGE_ANY;
+//         logger.printfln("inject tag:");
+
+//         if (last_tag_injection == 0)
+//             last_tag_injection -= 1;
+//     }, true);
+
+//     api.addCommand("nfc/inject_tag_start", &inject_tag, {"tag_id", "tag_type"}, [this](String &/*errmsg*/) {
+//         last_tag_injection = millis();
+//         tag_injection_action = TRIGGER_CHARGE_START;
+//         if (last_tag_injection == 0)
+//             last_tag_injection -= 1;
+//     }, true);
+
+//     api.addCommand("nfc/inject_tag_stop", &inject_tag, {"tag_id", "tag_type"}, [this](String &/*errmsg*/) {
+//         last_tag_injection = millis();
+//         tag_injection_action = TRIGGER_CHARGE_STOP;
+//         if (last_tag_injection == 0)
+//             last_tag_injection -= 1;
+//     }, true);
+
+//     this->DeviceModule::register_urls();
+// }
+ 
 
 void NFC::register_urls()
 {
     api.addState("nfc/seen_tags", &seen_tags, {}, {"tag_id", "tag_type"});
     api.addPersistentConfig("nfc/config", &config, {}, {"tag_id", "tag_type"});
+    
+    // Injection per API: Standard Injection
     api.addCommand("nfc/inject_tag", &inject_tag, {"tag_id", "tag_type"}, [this](String &/*errmsg*/) {
         last_tag_injection = millis();
         tag_injection_action = TRIGGER_CHARGE_ANY;
-        // 0 is the marker that no injection happened or the last one was handled.
-        // Fake that we were one ms faster.
-        if (last_tag_injection == 0)
+        logger.printfln("[NFC] inject_tag called: tag_id = %s, tag_type = %u, last_tag_injection = %u", 
+                          inject_tag.get("tag_id")->asEphemeralCStr(), 
+                          inject_tag.get("tag_type")->asUint(), last_tag_injection);
+        // Falls last_tag_injection == 0, reduziere um 1
+        if (last_tag_injection == 0) {
             last_tag_injection -= 1;
+        }
+        #if !(BUILD_IS_WARP2() || BUILD_IS_WARP3())
+        update_seen_tags();
+        #endif
     }, true);
 
+    // Injection: Start
     api.addCommand("nfc/inject_tag_start", &inject_tag, {"tag_id", "tag_type"}, [this](String &/*errmsg*/) {
         last_tag_injection = millis();
         tag_injection_action = TRIGGER_CHARGE_START;
-        // 0 is the marker that no injection happened or the last one was handled.
-        // Fake that we were one ms faster.
-        if (last_tag_injection == 0)
+        logger.printfln("[NFC] inject_tag_start called: tag_id = %s, tag_type = %u, last_tag_injection = %u", 
+                          inject_tag.get("tag_id")->asEphemeralCStr(), 
+                          inject_tag.get("tag_type")->asUint(), last_tag_injection);
+        if (last_tag_injection == 0){
             last_tag_injection -= 1;
+        }
+        #if !(BUILD_IS_WARP2() || BUILD_IS_WARP3())
+        update_seen_tags();
+        #endif
     }, true);
 
+    // Injection: Stop
     api.addCommand("nfc/inject_tag_stop", &inject_tag, {"tag_id", "tag_type"}, [this](String &/*errmsg*/) {
         last_tag_injection = millis();
         tag_injection_action = TRIGGER_CHARGE_STOP;
-        // 0 is the marker that no injection happened or the last one was handled.
-        // Fake that we were one ms faster.
-        if (last_tag_injection == 0)
+        logger.printfln("[NFC] inject_tag_stop called: tag_id = %s, tag_type = %u, last_tag_injection = %u", 
+                          inject_tag.get("tag_id")->asEphemeralCStr(), 
+                          inject_tag.get("tag_type")->asUint(), last_tag_injection);
+        if (last_tag_injection == 0){
             last_tag_injection -= 1;
+        }
+        #if !(BUILD_IS_WARP2() || BUILD_IS_WARP3())
+        update_seen_tags();
+        #endif
     }, true);
 
     this->DeviceModule::register_urls();
 }
+
 
 void NFC::loop()
 {
@@ -494,13 +674,12 @@ bool NFC::has_triggered(const Config *conf, void *data)
     tag_info_t *tag = (tag_info_t *)data;
     switch (conf->getTag<AutomationTriggerID>()) {
         case AutomationTriggerID::NFC:
-        if (cfg->get("tag_type")->asUint() == tag->tag_type && cfg->get("tag_id")->asString() == tag->tag_id) {
-            return true;
-        }
-        break;
-
-    default:
-        break;
+            if (cfg->get("tag_type")->asUint() == tag->tag_type && cfg->get("tag_id")->asString() == tag->tag_id) {
+                return true;
+            }
+            break;
+        default:
+            break;
     }
     return false;
 }
