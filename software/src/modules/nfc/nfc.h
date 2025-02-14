@@ -34,7 +34,7 @@
 // For hex strings: two chars per byte plus a separator between each byte
 #define NFC_TAG_ID_STRING_LENGTH (NFC_TAG_ID_LENGTH * 3 - 1)
 
-#define TAG_LIST_LENGTH 9
+#define TAG_LIST_LENGTH 8
 
 // Die Hardware-spezifische Implementierung (z.B. Aufrufe an das Bricklet) wird nur für WAPR2/WAPR3 kompiliert.
 class NFC : public DeviceModule<TF_NFC,
@@ -77,6 +77,9 @@ public:
     uint8_t get_user_id(tag_info_t *tag, uint8_t *tag_idx);
 
     void remove_user(uint8_t user_id);
+
+    // NEU: Methode zur Einsortierung eines neuen Tags in den Ringpuffer
+    void insert_new_tag(const tag_info_t &new_tag);
 
 #if MODULE_AUTOMATION_AVAILABLE()
     bool has_triggered(const Config *conf, void *data) override;
