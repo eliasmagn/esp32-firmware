@@ -167,10 +167,20 @@ static WebServerRequestReturnProtect run_command(WebServerRequest req, size_t cm
     }
 
     String message;
+
     if (bytes_written == 0 && reg.config->is_null()) {
         message = api.callCommand(reg, nullptr, 0);
     } else {
         message = api.callCommand(reg, recv_buf, bytes_written);
+    }
+
+    // ✅ If the command supports WebServerRequest, call the new API
+    if (reg.callback) {
+        reg.callback(message, &req);
+    } else {
+        // This should never happen if commands are registered correctly
+        logger.printfln("ERROR: Command handler missing!");
+        return req.send(500, "text/plain; charset=utf-8", "Internal Server Error");
     }
 
     if (message.isEmpty()) {
@@ -178,6 +188,7 @@ static WebServerRequestReturnProtect run_command(WebServerRequest req, size_t cm
     }
     return req.send(400, "text/plain; charset=utf-8", message.c_str());
 }
+
 
 WebServerRequestReturnProtect Http::run_response(WebServerRequest req, ResponseRegistration &reg)
 {

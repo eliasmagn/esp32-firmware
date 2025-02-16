@@ -457,6 +457,23 @@ void Users::setup()
     }
 }
 
+
+uint8_t Users::getUserIdByUsername(const String &username) {
+    // Directly iterate over the "users" array as done in pre_setup().
+    // config.get("users") returns a pointer to a Config object that supports count() and get(i).
+    for (size_t i = 0; i < config.get("users")->count(); ++i) {
+        // For each user, compare the "username" field.
+        if (config.get("users")->get(i)->get("username")->asString() == username) {
+            // Return the "id" field from that user.
+            return config.get("users")->get(i)->get("id")->asUint();
+        }
+    }
+    // If no matching user was found, return 0.
+    return 0;
+}
+
+
+
 void Users::search_next_free_user()
 {
     uint8_t user_id = config.get("next_user_id")->asUint();

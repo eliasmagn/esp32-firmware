@@ -29,6 +29,7 @@
 #include "chunked_response.h"
 #include "tools/allocator.h"
 #include "modules/web_server/web_server.h"
+#include "digest_auth.h"
 
 // Will be stored in IRAM -> use 32 bit integers even if a bool would be sufficient
 struct StateRegistration {
@@ -48,12 +49,14 @@ struct CommandRegistration {
     const char *const path;
     const char *const *const keys_to_censor_in_debug_report;
     ConfigRoot *const config;
-    const std::function<void(String &)> callback;
+    // Changed callback type: now accepts an extra parameter for the request.
+    const std::function<void(String &, WebServerRequest *)> callback;
 
     const size_t path_len;
     const size_t keys_to_censor_in_debug_report_len;
     const uint32_t is_action;
 };
+
 
 struct ResponseRegistration {
     const char *const path;
@@ -105,6 +108,7 @@ public:
 
     void addFeature(const char *name);
 
+    void addCommand(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &, WebServerRequest *)> &&callback, bool is_action);
     // Prefer this version of addCommand over the one below.
     void addCommand(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &errmsg)> &&callback, bool is_action);
     void addCommand(const String &path,      ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &errmsg)> &&callback, bool is_action);

@@ -26,6 +26,7 @@
 #define USERS_AUTH_TYPE_LOST 1
 #define USERS_AUTH_TYPE_NFC 2
 #define USERS_AUTH_TYPE_NFC_INJECTION 3
+#define USERS_AUTH_TYPE_HTTP 4
 
 #define IND_ACK 1001
 #define IND_NACK 1002
@@ -62,6 +63,7 @@ public:
     #define TRIGGER_CHARGE_STOP 2
     bool trigger_charge_action(uint8_t user_id, uint8_t auth_type, Config::ConfVariant auth_info, int action, micros_t deadtime_post_stop, micros_t deadtime_post_start);
 
+    uint8_t getUserIdByUsername(const String &username);
     void remove_username_file();
 
     Config config_users_prototype;

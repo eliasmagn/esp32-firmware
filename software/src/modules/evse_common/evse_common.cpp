@@ -465,6 +465,22 @@ void EvseCommon::register_urls()
             backend->set_charging_slot_max_current(CHARGING_SLOT_AUTOSTART_BUTTON, 32000);
     }, true);
 
+api.addCommand("evse/stop_user_charging", Config::Null(), {}, 
+    [](String &errmsg, WebServerRequest *req) {  
+        String username = "UNKNOWN_USER";
+        if (req) {
+            String auth = req->header("Authorization");
+            if (auth.startsWith("Digest ")) {
+                auth = auth.substring(7);
+                AuthFields fields = parseDigestAuth(auth.c_str());
+                username = fields.username;
+            }
+        }
+        logger.printfln("User '%s' stopped charging", username.c_str());
+    }, 
+true);
+
+
     api.addState("evse/external_current", &external_current);
     api.addCommand("evse/external_current_update", &external_current_update, {}, [this](String &/*errmsg*/) {
         auto current = external_current_update.get("current")->asUint();
