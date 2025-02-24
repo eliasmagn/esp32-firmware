@@ -412,6 +412,7 @@ size_t ChargeTracker::completeRecordsInLastFile()
 
 bool ChargeTracker::currentlyCharging()
 {
+    yield();
     File file = LittleFS.open(chargeRecordFilename(this->last_charge_record));
     return (file.size() % CHARGE_RECORD_SIZE) == sizeof(ChargeStart);
 }

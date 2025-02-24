@@ -766,22 +766,59 @@ void Users::remove_username_file()
         LittleFS.remove(USERNAME_FILE);
 }
 
+// bool Users::start_charging(uint8_t user_id, uint16_t current_limit, uint8_t auth_type, Config::ConfVariant auth_info)
+// {
+//     last_charge_action_triggered = now_us();
+
+//     if (charge_tracker.currentlyCharging())
+//         return false;
+
+//     uint32_t evse_uptime = evse_common.get_low_level_state().get("uptime")->asUint();
+//     float meter_start = get_energy();
+//     uint32_t timestamp = rtc.timestamp_minutes();
+
+//     if (!charge_tracker.startCharge(timestamp, meter_start, user_id, evse_uptime, auth_type, auth_info))
+//         return false;
+//     write_user_slot_info(user_id, evse_uptime, timestamp, meter_start);
+//     evse_common.set_user_current(current_limit);
+
+//     return true;
+// }
+
 bool Users::start_charging(uint8_t user_id, uint16_t current_limit, uint8_t auth_type, Config::ConfVariant auth_info)
 {
+    logger.printfln("Stack when function start_charging is called: %u", uxTaskGetStackHighWaterMark(NULL));
+    logger.printfln("start_charging: starting_1");
     last_charge_action_triggered = now_us();
+    // Offload the heavy (and potentially blocking) operations to a separate task.
+    task_scheduler.scheduleOnce([=]() {
+        if (charge_tracker.currentlyCharging()) {
+            logger.printfln("start_charging: already charging");
+            return;
+        }
+        logger.printfln("Stack when function not already charging: %u", uxTaskGetStackHighWaterMark(NULL));
 
-    if (charge_tracker.currentlyCharging())
-        return false;
+        uint32_t evse_uptime = evse_common.get_low_level_state().get("uptime")->asUint();
+        float meter_start = get_energy();
+        uint32_t timestamp = rtc.timestamp_minutes();
+        logger.printfln("start_charging: uptime=%u, meter_start=%f, timestamp=%u", evse_uptime, meter_start, timestamp);
 
-    uint32_t evse_uptime = evse_common.get_low_level_state().get("uptime")->asUint();
-    float meter_start = get_energy();
-    uint32_t timestamp = rtc.timestamp_minutes();
+        if (!charge_tracker.startCharge(timestamp, meter_start, user_id, evse_uptime, auth_type, auth_info)) {
+            logger.printfln("start_charging: charge_tracker.startCharge() failed");
+            // Optionally, update some state or notify about the failure.
+            return;
+        }
 
-    if (!charge_tracker.startCharge(timestamp, meter_start, user_id, evse_uptime, auth_type, auth_info))
-        return false;
-    write_user_slot_info(user_id, evse_uptime, timestamp, meter_start);
-    evse_common.set_user_current(current_limit);
+        logger.printfln("start_charging: writing user slot info");
+        write_user_slot_info(user_id, evse_uptime, timestamp, meter_start);
 
+        logger.printfln("start_charging: setting user current");
+        evse_common.set_user_current(current_limit);
+
+        logger.printfln("start_charging: success");
+    });
+
+    // Return immediately to avoid blocking the HTTP task.
     return true;
 }
 
