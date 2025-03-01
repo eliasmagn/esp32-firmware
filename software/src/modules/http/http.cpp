@@ -172,7 +172,14 @@ static WebServerRequestReturnProtect run_command(WebServerRequest req, size_t cm
     } else {
         message = api.callCommand(reg, recv_buf, bytes_written);
     }
-
+    // If the command supports WebServerRequest, call the new API
+    if (reg.callback) {
+        reg.callback(message, &req);
+    } else {
+    // This should never happen if commands are registered correctly
+        logger.printfln("ERROR: Command handler missing!");
+    return req.send(500, "text/plain; charset=utf-8", "Internal Server Error");
+    }
     if (message.isEmpty()) {
         return req.send(200);
     }

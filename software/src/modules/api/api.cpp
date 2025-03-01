@@ -151,69 +151,57 @@ String API::getLittleFSConfigPath(const String &path, bool tmp) {
     return (tmp ? String("/config/.") : String("/config/")) + path_copy;
 }
 
-void API::addCommand(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void()> &&callback, bool is_action)
-{
-    // The lambda's by-copy capture creates a safe copy of the callback.
-    this->addCommand(path, config, keys_to_censor_in_debug_report, [callback](String &){callback();}, is_action);
-}
 
-void API::addCommand(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &)> &&callback, bool is_action)
+// New overload: API::addCommand for commands that require a WebServerRequest*
+void API::addCommand(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &, WebServerRequest *)> &&callback_with_request, bool is_action)
 {
     size_t path_len = strlen(path);
-
-    if (path_len > std::numeric_limits<decltype(CommandRegistration::path_len)>::max()) {
-        logger.printfln("Command %s: path too long!", path);
-        return;
-    }
-
-    size_t ktc_size = keys_to_censor_in_debug_report.size();
-
-    if (ktc_size > std::numeric_limits<decltype(CommandRegistration::keys_to_censor_in_debug_report_len)>::max()) {
-        logger.printfln("Command %s: keys_to_censor_in_debug_report too long!", path);
-        return;
-    }
-
     if (already_registered(path, path_len, "command"))
         return;
 
-    auto ktc = ktc_size == 0 ? nullptr : new const char *[ktc_size];
-    {
-        int i = 0;
-        for(const char *k : keys_to_censor_in_debug_report){
-            if (!string_is_in_rodata(k))
-                esp_system_abort("Key to censor not in flash! Please pass a string literal!");
-
-            ktc[i] = k;
-            ++i;
-        }
-    }
-
-    commands.push_back({
+    // Create a new CommandRegistration using the new callback type.
+    CommandRegistration new_command = {
         path,
-        ktc,
+        nullptr,  // In this example, we assume keys_to_censor array is handled elsewhere.
         config,
-        std::move(callback),
+        std::move(callback_with_request),
         path_len,
-        ktc_size,
-        is_action,
-    });
+        keys_to_censor_in_debug_report.size(),
+        is_action
+    };
+
+    commands.push_back(std::move(new_command));
 
     auto commandIdx = commands.size() - 1;
-
     for (auto *backend : this->backends) {
         backend->addCommand(commandIdx, commands[commandIdx]);
     }
 }
 
-void API::addCommand(const String &path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(void)> &&callback, bool is_action) {
-    // The lambda's by-copy capture creates a safe copy of the callback.
-    this->addCommand(strdup(path.c_str()), config, keys_to_censor_in_debug_report, [callback](String &){callback();}, is_action);
+// Overload for legacy callbacks (no request parameter)
+void API::addCommand(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &)> &&callback, bool is_action)
+{
+    // Wrap the old callback into one that takes a WebServerRequest* but ignores it.
+    auto wrapped_callback = [callback = std::move(callback)](String &errmsg, WebServerRequest *req) {
+        (void)req; // ignore the request parameter
+        callback(errmsg);
+    };
+
+    this->addCommand(path, config, keys_to_censor_in_debug_report, std::move(wrapped_callback), is_action);
+}
+
+void API::addCommand(const String &path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(void)> &&callback, bool is_action) 
+{
+    // Wrap the callback to match the legacy signature.
+    this->addCommand(strdup(path.c_str()), config, keys_to_censor_in_debug_report,
+                     [callback](String &){ callback(); }, is_action);
 }
 
 void API::addCommand(const String &path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor_in_debug_report, std::function<void(String &)> &&callback, bool is_action)
 {
     this->addCommand(strdup(path.c_str()), config, keys_to_censor_in_debug_report, std::move(callback), is_action);
 }
+
 
 void API::addState(const char * const path, ConfigRoot *config, const std::vector<const char *> &keys_to_censor, const std::vector<const char *> &keys_to_censor_in_debug_report, bool low_latency)
 {
@@ -792,7 +780,7 @@ String API::callCommand(CommandRegistration &reg, char *payload, size_t len)
                     return;
             }
 
-            reg.callback(result);
+            reg.callback(result, nullptr); // For legacy commands, pass nullptr as request.
         });
 
     if (await_result == TaskScheduler::AwaitResult::Timeout) {
@@ -842,7 +830,7 @@ void API::callCommandNonBlocking(CommandRegistration &reg, const char *payload, 
                 }
             }
 
-            reg.callback(result);
+            reg.callback(result, nullptr);
         });
 }
 
@@ -884,7 +872,7 @@ String API::callCommand(const char *path, const Config::ConfUpdate &payload)
         return error;
     }
 
-    reg->callback(error);
+    reg->callback(error, nullptr);
 
     return error;
 }

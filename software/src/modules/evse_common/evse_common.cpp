@@ -514,6 +514,45 @@ void EvseCommon::register_urls()
         }
     }, false);
 
+    api.addCommand("evse/user_starts_charging", Config::Null(), {}, [](String &errmsg, WebServerRequest *req) {
+            // Step 1: Extract the username from the HTTP Digest Authorization header.
+            String username = "UNKNOWN_USER";
+
+            if (req) {
+                String auth = req->header("Authorization");
+                if (auth.startsWith("Digest ")) {
+                    auth = auth.substring(7); // Remove the "Digest " prefix.
+                    AuthFields fields = parseDigestAuth(auth.c_str());
+                    username = fields.username;
+                }
+            }
+
+            logger.printfln("Authenticated user: '%s'", username.c_str());
+            // Step 2: Map the username to a user ID.
+            uint8_t user_id = users.getUserIdByUsername(username);
+
+            if (user_id == 0) {
+                errmsg = "User not found";
+                return;
+            }
+            // Step 3: Determine the current limit for charging.
+            // This could be fetched from a config or passed as a payload.
+            uint16_t current_limit = 32000;
+            // Step 4: Define the authentication type and any additional auth info.
+
+            uint8_t auth_type = USERS_AUTH_TYPE_HTTP;
+            Config::ConfVariant auth_info; // Use an empty variant if no extra info is needed.
+
+            // Step 5: Call the Users module's start_charging function to tie the charge event to this user.
+            if (!users.start_charging(user_id, current_limit, auth_type, auth_info)) {
+                errmsg = "Failed to start charging for user";
+                return;
+            }
+
+            // Step 6: Log the successful event.
+            logger.printfln("User '%s' (ID %d) started charging with %u A", username.c_str(), user_id, current_limit);
+    }, true);
+
     api.addState("evse/global_current", &global_current);
     api.addCommand("evse/global_current_update", &global_current_update, {}, [this](String &/*errmsg*/) {
         uint16_t current = global_current_update.get("current")->asUint();
